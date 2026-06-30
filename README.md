@@ -31,11 +31,10 @@ At a 300ms search budget, a 1000x speed advantage translates from 0.6 simulation
 
 ## Results
 
-Agents built on this world model placed competitively on the Orbit Wars Kaggle leaderboard. The approach is documented in [blog_post.md](blog_post.md).
+Agents built on this world model placed competitively on the Orbit Wars Kaggle leaderboard.
 
 ---
 
 Part of [github.com/ternary-ai](https://github.com/ternary-ai) — open-source agents, models, synthetic data, prompt engineering, and scaffolding.
 
 [contact@ternary.capital](mailto:contact@ternary.capital) · US · Japan · Est. 2020
-# ow-code-world-model
