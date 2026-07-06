@@ -31,7 +31,7 @@ At a 300ms search budget, a 1000x speed advantage translates from 0.6 simulation
 
 ## Results
 
-Agents built on this world model placed competitively on the Orbit Wars Kaggle leaderboard.
+In internal arena play, the CWM-backed agent achieves a 100% win rate against random and greedy baselines, and a 72% win rate over the same MCTS architecture with untuned weights — isolating the contribution of CMA-ES weight discovery.
 
 ---
 
