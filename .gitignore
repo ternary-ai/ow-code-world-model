@@ -47,3 +47,16 @@ main.py
 
 # Documentation (PDFs, large research docs)
 orbit_wars_cli/documentation/
+dist/smm_mcts-0.1.0.tar.gz
+figures/benchmark_sequential_mcts.png
+.gitignore
+figures/h2h_win_rates.png
+figures/sim_throughput_comparison.png
+.gitignore
+figures/training_2p.png
+figures/training_4p.png
+.gitignore
+figures/wld_rates.png
+figures/gen_figures.py
+.gitignore
+figures/sim_warmup.png
