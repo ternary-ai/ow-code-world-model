@@ -1,0 +1,313 @@
+Metadata-Version: 2.4
+Name: smm-mcts
+Version: 0.1.0
+Summary: Simultaneous-Move MCTS with decoupled UCB and CMA-ES self-play trainer
+License: MIT
+Project-URL: Homepage, https://github.com/ternary-ai/smm-mcts
+Project-URL: Repository, https://github.com/ternary-ai/smm-mcts
+Keywords: mcts,game-ai,simultaneous-move,cma-es,reinforcement-learning
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: numpy>=1.24
+Requires-Dist: cma>=3.3
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
+Requires-Dist: matplotlib>=3.7; extra == "dev"
+Dynamic: license-file
+
+# smm-mcts
+
+**Simultaneous-Move MCTS with decoupled UCB and CMA-ES self-play trainer.**
+
+A game-agnostic Python library for building competitive agents in simultaneous-move games — any game where all players act at the same instant without observing each other's choices first.
+
+```
+pip install smm-mcts
+```
+
+---
+
+## Why simultaneous-move MCTS?
+
+Standard MCTS (minimax, AlphaZero-style) assumes one player acts at a time. Applied to a simultaneous-move game it converges to a **pure strategy** — a deterministic choice that a competent opponent can observe and exploit.
+
+SM-MCTS with **decoupled UCB** keeps each player's action-value table independent. The joint action is the Cartesian product of per-player UCB argmaxes. In two-player zero-sum games this converges to a Nash equilibrium approximation — no opponent can exploit it, regardless of how long the game goes on.
+
+```
+Standard MCTS on a simultaneous-move node:
+  UCB over joint (a0, a1) pairs  →  pure strategy  →  exploitable
+
+SM-MCTS (decoupled UCB):
+  UCB(P0) × UCB(P1) independently  →  mixed strategy  →  Nash equilibrium
+  Space: O(|A0| + |A1|) per node vs O(|A0| × |A1|) for joint-action UCB
+```
+
+In a 1 000-game benchmark on Orbit Wars (a real-time strategy game), SM-MCTS beat joint-action sequential MCTS **85% of the time** using the same world model, same time budget, and same weights. The only difference was the tree structure.
+
+---
+
+## Installation
+
+```bash
+pip install smm-mcts
+```
+
+Requires Python ≥ 3.11, NumPy ≥ 1.24, and [pycma](https://github.com/CMA-ES/pycma) ≥ 3.3.
+
+To install from source:
+
+```bash
+git clone https://github.com/ternary-ai/smm-mcts
+cd smm-mcts
+pip install -e .
+```
+
+---
+
+## Quick start
+
+### 1. Implement WorldModel for your game
+
+```python
+from smm import WorldModel   # Protocol — implement these 7 methods
+
+class MyGameWM:
+    def apply_joint_action(self, state, joint_action):
+        """Apply actions for all players; return new state (don't mutate)."""
+        ...
+
+    def is_terminal(self, state):
+        """Return True when the game is over."""
+        ...
+
+    def terminal_values(self, state, num_players):
+        """Return [v0, v1, ...] outcome in [0,1] for each player."""
+        ...
+
+    def value_vector(self, state, num_players, weights):
+        """Heuristic leaf evaluation; weights is the dict you optimise."""
+        return [evaluate(state, pid, weights) for pid in range(num_players)]
+
+    def action_candidates(self, state, player_id, **action_kwargs):
+        """List of abstract (hashable) actions available to player_id."""
+        ...
+
+    def to_concrete(self, state, player_id, abstract_action):
+        """Convert abstract action → concrete format for apply_joint_action."""
+        ...
+
+    def state_signature(self, state):
+        """Hashable signature for cross-turn subtree reuse (return None to disable)."""
+        return (state.step, tuple(state.board))
+```
+
+### 2. Build an agent
+
+```python
+import time
+from smm import SMBot
+
+wm  = MyGameWM()
+bot = SMBot(
+    wm,
+    num_players  = 2,
+    weights      = {"w_material": 0.9, "w_control": 0.5},
+    max_depth    = 3,          # rollout depth
+    pw_c         = 4.0,        # progressive-widening coefficient
+    pw_alpha     = 0.5,        # progressive-widening exponent
+    action_kwargs= {},         # forwarded to action_candidates()
+    reuse_tree   = True,       # cross-turn subtree promotion
+)
+
+# Choose action for player 0 with a 170ms budget
+action   = bot.choose_action(state, player_id=0, deadline=time.monotonic() + 0.17)
+concrete = wm.to_concrete(state, 0, action)
+```
+
+### 3. Train weights with CMA-ES self-play
+
+```python
+from smm import CMAESTrainer, WeightSpec
+
+spec = [
+    WeightSpec("w_material",   lo=0.0, hi=1.0, default=0.5),
+    WeightSpec("w_control",    lo=0.0, hi=1.0, default=0.5),
+    WeightSpec("w_production", lo=0.0, hi=1.0, default=0.5),
+    # add as many as your value_vector uses
+]
+
+trainer = CMAESTrainer(
+    world_model      = MyGameWM(),
+    num_players      = 2,
+    weight_spec      = spec,
+    initial_state_fn = lambda: MyGameState(),   # factory for fresh states
+    eval_games       = 6,      # games per candidate evaluation
+    pool_size        = 5,      # snapshot pool for diverse self-play
+    popsize          = 12,     # CMA-ES population per generation
+    sigma_init       = 0.3,    # initial search step size
+    budget_s         = 0.05,   # per-turn wall-clock budget (seconds)
+    bot_kwargs       = {"max_depth": 3},
+    verbose          = True,
+)
+
+best_weights = trainer.run(n_gens=100)
+print(best_weights)
+```
+
+---
+
+## API reference
+
+### `SMBot`
+
+```python
+SMBot(
+    world_model:      WorldModel,
+    num_players:      int   = 2,
+    weights:          dict  = {},
+    max_depth:        int   = 3,
+    pw_c:             float = 4.0,
+    pw_alpha:         float = 0.5,
+    action_kwargs:    dict  = {},
+    opponent_policy:  Callable | None = None,  # override opponent UCB
+    reuse_tree:       bool  = True,
+)
+```
+
+**`choose_action(state, player_id, deadline=None, budget_s=1.0, rng=None) → abstract_action`**
+
+Runs SM-MCTS until `deadline` (or `budget_s` seconds) and returns the most-visited action for `player_id`. Pass the result to `wm.to_concrete()` to get the action in your game's format.
+
+**`reset_tree()`** — clear the subtree cache between independent episodes.
+
+---
+
+### `CMAESTrainer`
+
+```python
+CMAESTrainer(
+    world_model:       WorldModel,
+    num_players:       int,
+    weight_spec:       list[WeightSpec],
+    initial_state_fn:  Callable[[], state],
+    eval_games:        int   = 6,
+    pool_size:         int   = 5,
+    popsize:           int   = 12,
+    sigma_init:        float = 0.3,
+    budget_s:          float = 0.05,
+    bot_kwargs:        dict  = {},
+    seed:              int | None = None,
+    verbose:           bool  = True,
+)
+```
+
+**`run(n_gens, initial_weights=None) → dict`**
+
+Runs CMA-ES for `n_gens` generations and returns the best weight dict found. Uses a rotating snapshot pool to maintain opponent diversity (same principle as AlphaZero's historical opponent pool, without the neural network).
+
+---
+
+### `WeightSpec`
+
+```python
+WeightSpec(
+    name:    str,    # key in the weights dict
+    lo:      float,  # lower bound
+    hi:      float,  # upper bound
+    default: float = 0.0,
+    fixed:   bool  = False,  # exclude from search, always use default
+)
+```
+
+---
+
+### `WorldModel` protocol
+
+Full docstrings in [`smm/protocols.py`](smm/protocols.py). The seven methods:
+
+| Method | Purpose |
+|---|---|
+| `apply_joint_action(state, joint)` | Transition function |
+| `is_terminal(state)` | Terminal check |
+| `terminal_values(state, n)` | Win/loss/draw outcomes |
+| `value_vector(state, n, weights)` | Heuristic leaf evaluation |
+| `action_candidates(state, pid, **kw)` | Available actions (must be **hashable**) |
+| `to_concrete(state, pid, abstract)` | Abstract → game-format action |
+| `state_signature(state)` | Hashable identifier for subtree reuse |
+
+---
+
+## Opponent-model hook
+
+To bias opponent simulation toward realistic (not adversarially optimal) play — e.g. using an archetype model fitted from recorded games:
+
+```python
+def archetype_policy(node, pid, rng):
+    """Sample an opponent action weighted by observed attack rate."""
+    attack_rate = my_archetype_model.attack_rate(pid)
+    attacks = [a for a in node.candidates[pid] if is_attack(a)]
+    no_ops  = [a for a in node.candidates[pid] if not is_attack(a)]
+    if attacks and rng.random() < attack_rate:
+        return rng.choice(attacks)
+    return no_ops[0] if no_ops else node.candidates[pid][0]
+
+bot = SMBot(wm, num_players=2, opponent_policy=archetype_policy)
+```
+
+---
+
+## Algorithm details
+
+### Decoupled UCB
+
+At each simultaneous-move node, every player independently maximises:
+
+```
+UCB(player i, action a) = Q(i, a) / N(i, a) + C × sqrt(log(n) / N(i, a))
+```
+
+where `Q(i, a)` and `N(i, a)` are per-player accumulators, and `n` is the total node visit count. The joint action is `(argmax UCB(0), argmax UCB(1), …)`.
+
+### Progressive widening
+
+The number of actions considered at a node grows as `ceil(pw_c × (n+1)^pw_alpha)`. This prevents the search from spreading too thinly at shallow depths.
+
+### Cross-turn subtree reuse
+
+After choosing an action, the node matching the observed successor state is promoted to the next turn's root — carrying accumulated visit statistics. Typical games warm up in 5–10 turns.
+
+### CMA-ES pool training
+
+1. Sample `popsize` weight vectors from a multivariate Gaussian
+2. Evaluate each by running `eval_games` games against a rotating snapshot pool
+3. Update the Gaussian based on population fitness (win rate)
+4. Add the best candidate to the pool when it improves
+5. Repeat for `n_gens` generations
+
+Pool diversity prevents the weights from over-fitting to a single opponent style.
+
+---
+
+## Reference implementation: Orbit Wars
+
+[`ow_adapter.py`](examples/ow_adapter.py) wraps the Orbit Wars CWM (a hand-written Python simulator of an RTS game) into the WorldModel protocol. It was used to find the CMA-ES weights that achieve:
+
+- 100% win rate vs random and greedy baselines
+- 85% win rate vs sequential (joint-action) MCTS with the same world model and budget
+- 72% win rate vs the same SM-MCTS architecture with untuned weights
+
+See the full writeup: [How to Build an Orbit Wars Agent with a Code World Model, MCTS, and CMA-ES](https://jdsemrau.substack.com/p/deepmind-code-world-models).
+
+---
+
+## License
+
+MIT
